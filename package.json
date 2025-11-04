@@ -1,0 +1,21 @@
+{
+  "name": "trae-three-js",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@types/three": "^0.181.0",
+    "gsap": "^3.13.0",
+    "three": "^0.181.0",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "vite": "^7.1.7"
+  }
+}
