@@ -61,9 +61,9 @@ const config = reactive({
   },
   // 天空配置
   sky: {
-    dayTexture: 'https://threejs.org/examples/textures/skybox/skyday.jpg',
-    nightTexture: 'https://threejs.org/examples/textures/skybox/skynight.jpg',
-    cloudTexture: 'https://threejs.org/examples/textures/clouds/cloud.png',
+    dayTexture: '/textures/skybox/skyday.jpg',
+    nightTexture: '/textures/skybox/skynight.jpg',
+    cloudTexture: '/textures/clouds/cloud.png',
     cloudSpeed: 0.01
   },
   // 后期效果配置
@@ -159,9 +159,26 @@ const initScene = () => {
 
 // 创建天空盒
 const createSkybox = () => {
+  // 创建天空盒材质 - 使用内置的CanvasTexture生成简单纹理
+  const canvas = document.createElement('canvas')
+  canvas.width = 1024
+  canvas.height = 1024
+  const context = canvas.getContext('2d')
+  
+  // 创建渐变背景
+  const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height)
+  gradient.addColorStop(0, '#87CEEB') // 浅蓝色
+  gradient.addColorStop(1, '#4A90E2') // 深蓝色
+  
+  context.fillStyle = gradient
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  
+  // 创建纹理
+  const skyboxTexture = new THREE.CanvasTexture(canvas)
+  
   // 创建天空盒材质
   const skyboxMaterial = new THREE.MeshBasicMaterial({
-    map: new THREE.TextureLoader().load(config.sky.dayTexture),
+    map: skyboxTexture,
     side: THREE.BackSide
   })
   
@@ -173,9 +190,34 @@ const createSkybox = () => {
 
 // 创建动态云层
 const createClouds = () => {
+  // 创建云层材质 - 使用内置的CanvasTexture生成简单纹理
+  const canvas = document.createElement('canvas')
+  canvas.width = 1024
+  canvas.height = 1024
+  const context = canvas.getContext('2d')
+  
+  // 创建云层纹理
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  
+  // 添加一些随机的白色斑点作为云层
+  for (let i = 0; i < 1000; i++) {
+    const x = Math.random() * canvas.width
+    const y = Math.random() * canvas.height
+    const radius = Math.random() * 20 + 5
+    
+    context.beginPath()
+    context.arc(x, y, radius, 0, Math.PI * 2)
+    context.fillStyle = 'rgba(255, 255, 255, 0.8)'
+    context.fill()
+  }
+  
+  // 创建纹理
+  const cloudTexture = new THREE.CanvasTexture(canvas)
+  
   // 创建云层材质
   const cloudMaterial = new THREE.MeshBasicMaterial({
-    map: new THREE.TextureLoader().load(config.sky.cloudTexture),
+    map: cloudTexture,
     transparent: true,
     opacity: 0.7,
     depthWrite: false
@@ -387,8 +429,16 @@ const initPostProcessing = () => {
   
   // 添加抗锯齿效果
   if (renderer.getPixelRatio() === 1 && !renderer.capabilities.isWebGL2) {
-    const smaaPass = new SMAAPass(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio())
-    composer.addPass(smaaPass)
+    // 检查SMAAPass是否需要额外的纹理文件
+    try {
+      const smaaPass = new SMAAPass(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio())
+      composer.addPass(smaaPass)
+    } catch (error) {
+      console.error('Error creating SMAAPass:', error)
+      // 如果SMAAPass创建失败，使用FXAAPass代替
+      const fxaaPass = new FXAAPass(window.innerWidth, window.innerHeight)
+      composer.addPass(fxaaPass)
+    }
   } else {
     const fxaaPass = new FXAAPass(window.innerWidth, window.innerHeight)
     composer.addPass(fxaaPass)
