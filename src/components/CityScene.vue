@@ -1,9 +1,12 @@
 <template>
-  <div ref="container" class="city-scene-container"></div>
+  <div ref="container" class="city-scene-container">
+    <TrafficSystem ref="trafficSystem" />
+  </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, reactive, computed } from 'vue'
+import TrafficSystem from './TrafficSystem.vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
@@ -16,13 +19,18 @@ import gsap from 'gsap'
 
 // 组件引用
 const container = ref(null)
+const trafficSystem = ref(null)
 
 // 场景相关变量
 let scene, camera, renderer, controls, composer
 let clock, ambientLight, directionalLight, pointLight
-let cityGroup, roadGroup, riverGroup, parkGroup, cloudGroup
+let cityGroup, roadGroup, riverGroup, parkGroup, cloudGroup, trafficGroup
 let skybox, cloudsMesh
 let animationFrameId
+
+// 交通系统变量
+let roads = []
+let cameras = []
 
 // 场景配置
 const config = reactive({
@@ -149,12 +157,14 @@ const initScene = () => {
   riverGroup = new THREE.Group()
   parkGroup = new THREE.Group()
   cloudGroup = new THREE.Group()
+  trafficGroup = new THREE.Group()
   
   scene.add(cityGroup)
   scene.add(roadGroup)
   scene.add(riverGroup)
   scene.add(parkGroup)
   scene.add(cloudGroup)
+  scene.add(trafficGroup)
 }
 
 // 创建天空盒
@@ -323,21 +333,31 @@ const generateBuildings = () => {
 // 生成道路网格
 const generateRoads = () => {
   // 道路材质
-  const roadMaterial = new THREE.MeshLambertMaterial({
-    color: config.road.color
-  })
+  const roadMaterial = new THREE.MeshLambertMaterial({ color: config.road.color })
   
   // 道路宽度
   const roadWidth = config.road.width
+  const roadSpacing = roadWidth + 20
+  
+  roads = []
   
   // 生成横向道路
   for (let i = -config.city.gridSize/2; i <= config.city.gridSize/2; i++) {
     const roadLength = config.city.size
     const roadGeometry = new THREE.BoxGeometry(roadLength, 0.1, roadWidth)
     const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial)
-    roadMesh.position.set(0, 0, i * (roadWidth + 20))
+    roadMesh.position.set(0, 0, i * roadSpacing)
     roadMesh.receiveShadow = true
     roadGroup.add(roadMesh)
+    
+    // 保存道路信息
+    roads.push({
+      id: `road-h-${i}`,
+      mesh: roadMesh,
+      type: 'horizontal',
+      position: { x: 0, y: 0, z: i * roadSpacing },
+      density: 0
+    })
   }
   
   // 生成纵向道路
@@ -345,9 +365,58 @@ const generateRoads = () => {
     const roadLength = config.city.size
     const roadGeometry = new THREE.BoxGeometry(roadWidth, 0.1, roadLength)
     const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial)
-    roadMesh.position.set(i * (roadWidth + 20), 0, 0)
+    roadMesh.position.set(i * roadSpacing, 0, 0)
     roadMesh.receiveShadow = true
     roadGroup.add(roadMesh)
+    
+    // 保存道路信息
+    roads.push({
+      id: `road-v-${i}`,
+      mesh: roadMesh,
+      type: 'vertical',
+      position: { x: i * roadSpacing, y: 0, z: 0 },
+      density: 0
+    })
+  }
+  
+  // 生成路口摄像头
+  generateCameras()
+}
+
+// 生成路口摄像头
+const generateCameras = () => {
+  cameras = []
+  
+  // 摄像头材质
+  const cameraMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+  const cameraGeometry = new THREE.CylinderGeometry(0.5, 0.5, 2, 8)
+  
+  // 在道路交叉口生成摄像头
+  const roadSpacing = config.road.width + 20
+  
+  for (let i = -config.city.gridSize/2; i <= config.city.gridSize/2; i++) {
+    for (let j = -config.city.gridSize/2; j <= config.city.gridSize/2; j++) {
+      // 跳过中心位置
+      if (i === 0 && j === 0) continue
+      
+      const cameraMesh = new THREE.Mesh(cameraGeometry, cameraMaterial)
+      cameraMesh.position.set(i * roadSpacing, 10, j * roadSpacing)
+      cameraMesh.rotation.z = Math.PI / 2
+      trafficGroup.add(cameraMesh)
+      
+      // 添加点击事件
+      cameraMesh.userData = {
+        cameraId: `camera-${i}-${j}`,
+        cameraName: `路口${i}-${j}`
+      }
+      
+      cameras.push({
+        id: `camera-${i}-${j}`,
+        name: `路口${i}-${j}`,
+        position: { x: i * roadSpacing, y: 10, z: j * roadSpacing },
+        mesh: cameraMesh
+      })
+    }
   }
 }
 
@@ -544,6 +613,104 @@ const handleWindowResize = () => {
   }
 }
 
+// WebSocket连接
+let ws = null
+
+// 初始化WebSocket连接
+const initWebSocket = () => {
+  ws = new WebSocket('ws://localhost:8080/traffic')
+  
+  ws.onopen = () => {
+    console.log('WebSocket连接已建立')
+  }
+  
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    updateTrafficData(data)
+  }
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket错误:', error)
+  }
+  
+  ws.onclose = () => {
+    console.log('WebSocket连接已关闭')
+    // 尝试重新连接
+    setTimeout(initWebSocket, 5000)
+  }
+}
+
+// 更新交通数据
+const updateTrafficData = (data) => {
+  if (data.roads) {
+    data.roads.forEach(trafficRoad => {
+      const road = roads.find(r => r.id === trafficRoad.id)
+      if (road) {
+        road.density = trafficRoad.density
+        // 根据拥堵程度设置道路颜色
+        const color = getTrafficColor(trafficRoad.density)
+        road.mesh.material.color.set(color)
+      }
+    })
+  }
+  
+  if (data.cameras) {
+    data.cameras.forEach(cameraData => {
+      const camera = cameras.find(c => c.id === cameraData.id)
+      if (camera) {
+        camera.status = cameraData.status
+      }
+    })
+  }
+  
+  // 将交通数据传递给TrafficSystem组件
+  if (trafficSystem.value) {
+    trafficSystem.value.updateTrafficData(data)
+  }
+}
+
+// 根据拥堵程度获取颜色
+const getTrafficColor = (density) => {
+  // 绿色：畅通（0-0.3）
+  if (density < 0.3) {
+    return new THREE.Color(0x00ff00)
+  }
+  // 黄色：缓慢（0.3-0.7）
+  else if (density < 0.7) {
+    return new THREE.Color(0xffff00)
+  }
+  // 红色：拥堵（0.7-1.0）
+  else {
+    return new THREE.Color(0xff0000)
+  }
+}
+
+// 鼠标点击事件处理
+const handleMouseClick = (event) => {
+  // 创建射线投射器
+  const raycaster = new THREE.Raycaster()
+  const mouse = new THREE.Vector2()
+  
+  // 计算鼠标位置
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1
+  
+  // 设置射线投射器
+  raycaster.setFromCamera(mouse, camera)
+  
+  // 检测与摄像头的交点
+  const cameraMeshes = cameras.map(cam => cam.mesh)
+  const intersects = raycaster.intersectObjects(cameraMeshes)
+  
+  if (intersects.length > 0) {
+    const cameraId = intersects[0].object.userData.cameraId
+    // 调用交通系统的选择摄像头方法
+    if (trafficSystem.value) {
+      trafficSystem.value.selectCamera(cameraId)
+    }
+  }
+}
+
 // 渲染循环
 const animate = () => {
   animationFrameId = requestAnimationFrame(animate)
@@ -594,6 +761,12 @@ onMounted(() => {
   // 添加窗口大小变化监听
   window.addEventListener('resize', handleWindowResize)
   
+  // 添加鼠标点击事件监听
+  window.addEventListener('click', handleMouseClick)
+  
+  // 初始化WebSocket连接
+  initWebSocket()
+  
   // 启动渲染循环
   animate()
 })
@@ -605,6 +778,14 @@ onUnmounted(() => {
   
   // 移除窗口大小变化监听
   window.removeEventListener('resize', handleWindowResize)
+  
+  // 移除鼠标点击事件监听
+  window.removeEventListener('click', handleMouseClick)
+  
+  // 关闭WebSocket连接
+  if (ws) {
+    ws.close()
+  }
   
   // 清理Three.js资源
   scene.clear()
