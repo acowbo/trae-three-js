@@ -1,12 +1,14 @@
 <template>
   <div ref="container" class="city-scene-container">
     <TrafficSystem ref="trafficSystem" />
+    <PopulationEnvironmentSystem ref="populationEnvSystem" />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, reactive, computed } from 'vue'
 import TrafficSystem from './TrafficSystem.vue'
+import PopulationEnvironmentSystem from './PopulationEnvironmentSystem.vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
@@ -20,13 +22,20 @@ import gsap from 'gsap'
 // 组件引用
 const container = ref(null)
 const trafficSystem = ref(null)
+const populationEnvSystem = ref(null)
 
 // 场景相关变量
 let scene, camera, renderer, controls, composer
 let clock, ambientLight, directionalLight, pointLight
-let cityGroup, roadGroup, riverGroup, parkGroup, cloudGroup, trafficGroup
+let cityGroup, roadGroup, riverGroup, parkGroup, cloudGroup, trafficGroup, populationGroup, sensorGroup, facilityGroup, eventGroup
 let skybox, cloudsMesh
 let animationFrameId
+
+// 人口和环境系统变量
+let populationGrid = null
+let sensorMeshes = []
+let facilityMeshes = []
+let eventMeshes = []
 
 // 交通系统变量
 let roads = []
@@ -158,6 +167,10 @@ const initScene = () => {
   parkGroup = new THREE.Group()
   cloudGroup = new THREE.Group()
   trafficGroup = new THREE.Group()
+  populationGroup = new THREE.Group()
+  sensorGroup = new THREE.Group()
+  facilityGroup = new THREE.Group()
+  eventGroup = new THREE.Group()
   
   scene.add(cityGroup)
   scene.add(roadGroup)
@@ -165,6 +178,10 @@ const initScene = () => {
   scene.add(parkGroup)
   scene.add(cloudGroup)
   scene.add(trafficGroup)
+  scene.add(populationGroup)
+  scene.add(sensorGroup)
+  scene.add(facilityGroup)
+  scene.add(eventGroup)
 }
 
 // 创建天空盒
@@ -708,6 +725,37 @@ const handleMouseClick = (event) => {
     if (trafficSystem.value) {
       trafficSystem.value.selectCamera(cameraId)
     }
+    return
+  }
+  
+  // 检测与传感器的交点
+  const sensorIntersects = raycaster.intersectObjects(sensorMeshes)
+  if (sensorIntersects.length > 0) {
+    const entity = sensorIntersects[0].object.userData.entity
+    if (populationEnvSystem.value) {
+      populationEnvSystem.value.selectEntity(entity)
+    }
+    return
+  }
+  
+  // 检测与设施的交点
+  const facilityIntersects = raycaster.intersectObjects(facilityMeshes)
+  if (facilityIntersects.length > 0) {
+    const entity = facilityIntersects[0].object.userData.entity
+    if (populationEnvSystem.value) {
+      populationEnvSystem.value.selectEntity(entity)
+    }
+    return
+  }
+  
+  // 检测与事件的交点
+  const eventIntersects = raycaster.intersectObjects(eventMeshes)
+  if (eventIntersects.length > 0) {
+    const entity = eventIntersects[0].object.userData.entity
+    if (populationEnvSystem.value) {
+      populationEnvSystem.value.selectEntity(entity)
+    }
+    return
   }
 }
 
@@ -734,6 +782,16 @@ const animate = () => {
     })
   }
   
+  // 更新人口密度热力图
+  updatePopulationGrid()
+  
+  // 更新应急事件闪烁效果
+  const time = clock.getElapsedTime()
+  eventMeshes.forEach((eventMesh, index) => {
+    const scale = 1 + Math.sin(time * 5 + index) * 0.1
+    eventMesh.scale.set(scale, scale, scale)
+  })
+  
   // 更新昼夜循环
   updateDayNightCycle()
   
@@ -742,6 +800,118 @@ const animate = () => {
     composer.render()
   } else {
     renderer.render(scene, camera)
+  }
+}
+
+// 创建人口密度热力图
+const createPopulationGrid = () => {
+  const gridSize = 2000
+  const cellSize = 100
+  const gridMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 })
+  
+  for (let x = -gridSize/2; x < gridSize/2; x += cellSize) {
+    for (let z = -gridSize/2; z < gridSize/2; z += cellSize) {
+      const cellGeometry = new THREE.PlaneGeometry(cellSize, cellSize)
+      const cellMesh = new THREE.Mesh(cellGeometry, gridMaterial.clone())
+      cellMesh.rotation.x = -Math.PI / 2
+      cellMesh.position.set(x + cellSize/2, 0.1, z + cellSize/2)
+      populationGroup.add(cellMesh)
+    }
+  }
+}
+
+// 创建环境传感器
+const createEnvironmentSensors = () => {
+  const sensorGeometry = new THREE.CylinderGeometry(1, 1, 5, 8)
+  
+  populationEnvSystem.value.environmentSensors.forEach(sensor => {
+    const sensorMaterial = new THREE.MeshBasicMaterial({ color: sensor.color })
+    const sensorMesh = new THREE.Mesh(sensorGeometry, sensorMaterial)
+    sensorMesh.position.set(sensor.position.x, sensor.position.y, sensor.position.z)
+    sensorMesh.userData = { entity: sensor }
+    sensorGroup.add(sensorMesh)
+    sensorMeshes.push(sensorMesh)
+    
+    // 添加粒子效果
+    const particleGeometry = new THREE.BufferGeometry()
+    const particleCount = 100
+    const positions = new Float32Array(particleCount * 3)
+    
+    for (let i = 0; i < particleCount * 3; i += 3) {
+      positions[i] = (Math.random() - 0.5) * 10
+      positions[i + 1] = Math.random() * 5
+      positions[i + 2] = (Math.random() - 0.5) * 10
+    }
+    
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    const particleMaterial = new THREE.PointsMaterial({ color: sensor.color, size: 0.2, transparent: true, opacity: 0.5 })
+    const particleSystem = new THREE.Points(particleGeometry, particleMaterial)
+    particleSystem.position.set(sensor.position.x, sensor.position.y, sensor.position.z)
+    sensorGroup.add(particleSystem)
+  })
+}
+
+// 创建公共设施
+const createPublicFacilities = () => {
+  const facilityGeometries = {
+    hospital: new THREE.CylinderGeometry(2, 2, 15, 8),
+    school: new THREE.BoxGeometry(5, 10, 5),
+    subway: new THREE.TorusGeometry(3, 1, 8, 16)
+  }
+  
+  populationEnvSystem.value.publicFacilities.forEach(facility => {
+    const geometry = facilityGeometries[facility.facilityType] || facilityGeometries.hospital
+    const facilityMaterial = new THREE.MeshBasicMaterial({ color: facility.color })
+    const facilityMesh = new THREE.Mesh(geometry, facilityMaterial)
+    facilityMesh.position.set(facility.position.x, facility.position.y, facility.position.z)
+    facilityMesh.userData = { entity: facility }
+    facilityGroup.add(facilityMesh)
+    facilityMeshes.push(facilityMesh)
+  })
+}
+
+// 创建应急事件
+const createEmergencyEvents = () => {
+  const eventGeometry = new THREE.SphereGeometry(3, 8, 8)
+  
+  populationEnvSystem.value.emergencyEvents.forEach(event => {
+    const eventMaterial = new THREE.MeshBasicMaterial({ color: event.color })
+    const eventMesh = new THREE.Mesh(eventGeometry, eventMaterial)
+    eventMesh.position.set(event.position.x, event.position.y, event.position.z)
+    eventMesh.userData = { entity: event }
+    eventGroup.add(eventMesh)
+    eventMeshes.push(eventMesh)
+  })
+}
+
+// 更新人口密度热力图
+const updatePopulationGrid = () => {
+  const currentTime = populationEnvSystem.value.currentTime
+  const currentHourData = populationEnvSystem.value.populationData.find(item => item.hour === currentTime)
+  
+  if (currentHourData) {
+    let index = 0
+    populationGroup.children.forEach(cell => {
+      if (currentHourData.data[index]) {
+        const density = currentHourData.data[index].density
+        const color = getPopulationColor(density)
+        cell.material.color.set(color)
+        cell.material.opacity = density * 0.5
+      }
+      index++
+    })
+  }
+}
+
+// 获取人口密度颜色
+const getPopulationColor = (density) => {
+  // 颜色渐变：绿色（低）-> 黄色（中）-> 红色（高）
+  if (density < 0.3) {
+    return new THREE.Color(0x00ff00)
+  } else if (density < 0.7) {
+    return new THREE.Color(0xffff00)
+  } else {
+    return new THREE.Color(0xff0000)
   }
 }
 
@@ -755,6 +925,15 @@ onMounted(() => {
   generateRoads()
   generateRiver()
   generateParks()
+  createPopulationGrid()
+  
+  // 延迟初始化人口环境系统组件
+  setTimeout(() => {
+    createEnvironmentSensors()
+    createPublicFacilities()
+    createEmergencyEvents()
+  }, 100)
+  
   initPostProcessing()
   startAutoFlight()
   
